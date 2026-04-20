@@ -9,29 +9,36 @@ st.set_page_config(page_title="맘스패치 ERP", page_icon="🟢", layout="wide
 DB_FILE = "momspatch.db"
 
 # =========================
-# 🎨 카카오 느낌 UI (화이트 + 연두)
+# 스타일 (화이트 + 연두)
 # =========================
 st.markdown("""
 <style>
-body { background-color: #ffffff; }
-section[data-testid="stSidebar"] { background-color: #f4fff4; }
-h1 { color:#2ecc71; }
-.stButton>button { background:#7ed957; color:black; border-radius:8px; }
-.stButton>button:hover { background:#2ecc71; }
+body { background-color: #f9fff9; }
+header { background-color: #eaffea !important; }
+.sidebar .sidebar-content { background-color: #f1fff1; }
+h1, h2, h3 { color: #2e7d32; }
+.stButton>button { background-color: #7ed957; color: black; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🟢 맘스패치 ERP 시스템")
 
 # =========================
-# DB
+# 포맷
 # =========================
-def get_conn():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
+def won(x):
+    try:
+        return f"{int(x):,}원"
+    except:
+        return x
 
+# =========================
+# DB 초기화
+# =========================
 def init_db():
-    conn = get_conn()
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+
     c.execute("""
     CREATE TABLE IF NOT EXISTS sales (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,111 +53,163 @@ def init_db():
         region TEXT
     )
     """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS delete_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deleted_at TEXT,
+        reason TEXT,
+        data TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
 
 init_db()
 
 # =========================
-# 유틸
-# =========================
-def won(x):
-    return f"{int(x):,}원"
-
-# =========================
-# 데이터 처리
+# DB 함수
 # =========================
 def insert_sale(data):
-    conn = get_conn()
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""
-    INSERT INTO sales (created_at,user,type,sale_date,item,qty,price,total,region)
-    VALUES (?,?,?,?,?,?,?,?,?)
-    """, data)
+    c.execute("INSERT INTO sales VALUES (NULL,?,?,?,?,?,?,?,?,?)", data)
     conn.commit()
     conn.close()
 
+
 def load_df():
-    conn = get_conn()
+    conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql("SELECT * FROM sales", conn)
     conn.close()
     return df
 
+
+def log_delete(reason, df):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO delete_log VALUES (NULL,?,?,?)",
+              (datetime.now(), reason, df.to_json()))
+    conn.commit()
+    conn.close()
+
+
+def delete_by_ids(ids):
+    df = load_df()
+    target = df[df["id"].isin(ids)]
+    log_delete("개별삭제", target)
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.executemany("DELETE FROM sales WHERE id=?", [(i,) for i in ids])
+    conn.commit()
+    conn.close()
+
+
+def delete_by_date(date_val):
+    df = load_df()
+    target = df[df["sale_date"] == str(date_val)]
+    log_delete("날짜삭제", target)
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM sales WHERE sale_date=?", (str(date_val),))
+    conn.commit()
+    conn.close()
+
+
+def delete_by_user(user):
+    df = load_df()
+    target = df[df["user"] == user]
+    log_delete("담당자삭제", target)
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM sales WHERE user=?", (user,))
+    conn.commit()
+    conn.close()
+
 # =========================
 # 메뉴
 # =========================
-menu = st.sidebar.radio("메뉴", ["입력","대시보드","DB관리"])
+menu = st.sidebar.radio("메뉴",
+    ["입력","정산","전체DB","삭제관리","로그"])
 
 # =========================
 # 입력
 # =========================
 if menu == "입력":
-    st.subheader("판매 입력")
     with st.form("f"):
         name = st.text_input("담당자")
         t = st.selectbox("구분", ["전화주문","온라인판매","현장판매"])
         d = st.date_input("날짜")
         item = st.text_input("상품")
-        qty = st.number_input("수량",1)
-        price = st.number_input("단가",0,step=1000)
+        qty = st.number_input("수량", 1)
+        price = st.number_input("단가", 0, step=1000)
         region = st.text_input("지역") if t=="현장판매" else ""
 
         if st.form_submit_button("저장"):
             total = qty*price
-            insert_sale((datetime.now(), name, t, str(d), item, qty, price, total, region))
-            st.success(f"저장 완료 {won(total)}")
+            insert_sale((datetime.now(), name, t, d, item, qty, price, total, region))
+            st.success(f"저장 완료: {won(total)}")
 
 # =========================
-# 대시보드 (그래프 포함)
+# 정산
 # =========================
-elif menu == "대시보드":
+elif menu == "정산":
     df = load_df()
+    if not df.empty:
+        df["sale_date"] = pd.to_datetime(df["sale_date"])
+        df["month"] = df["sale_date"].dt.to_period("M")
+        df["year"] = df["sale_date"].dt.year
 
-    if df.empty:
-        st.warning("데이터 없음")
-    else:
-        df['sale_date'] = pd.to_datetime(df['sale_date'])
+        tab = st.radio("정산", ["일별","월별","연도별"])
 
-        period = st.radio("조회", ["일별","월별","연도별"])
-
-        if period == "일별":
-            df['group'] = df['sale_date'].dt.date
-        elif period == "월별":
-            df['group'] = df['sale_date'].dt.to_period('M').astype(str)
+        if tab == "일별":
+            g = df.groupby(df["sale_date"].dt.date)["total"].sum()
+        elif tab == "월별":
+            g = df.groupby("month")["total"].sum()
         else:
-            df['group'] = df['sale_date'].dt.year
+            g = df.groupby("year")["total"].sum()
 
-        g = df.groupby('group')['total'].sum().reset_index()
-
-        st.subheader("매출 그래프")
-        st.line_chart(g.set_index('group'))
-
-        st.subheader("매출 테이블")
-        g['total'] = g['total'].apply(won)
-        st.dataframe(g)
+        st.dataframe(g.apply(won))
 
 # =========================
-# DB관리
+# 전체 DB
 # =========================
-elif menu == "DB관리":
+elif menu == "전체DB":
     df = load_df()
+    if not df.empty:
+        df["total"] = df["total"].apply(won)
+        st.dataframe(df)
 
-    st.subheader("전체 데이터")
-    st.dataframe(df)
+        ids = st.multiselect("삭제할 ID 선택", df["id"])
+        if st.button("선택 삭제"):
+            delete_by_ids(ids)
+            st.success("삭제 완료")
+            st.rerun()
 
-    ids = st.multiselect("삭제 ID", df['id'])
-    if st.button("선택 삭제"):
-        conn = get_conn()
-        c = conn.cursor()
-        for i in ids:
-            c.execute("DELETE FROM sales WHERE id=?",(i,))
-        conn.commit()
-        conn.close()
+# =========================
+# 삭제관리
+# =========================
+elif menu == "삭제관리":
+    st.subheader("조건 삭제")
+    d = st.date_input("날짜 삭제")
+    if st.button("날짜 삭제 실행"):
+        delete_by_date(d)
         st.success("삭제 완료")
-        st.rerun()
 
-    st.subheader("전체 초기화")
-    if st.button("DB 전체 삭제"):
-        os.remove(DB_FILE)
-        init_db()
-        st.success("초기화 완료")
+    user = st.text_input("담당자 삭제")
+    if st.button("담당자 삭제 실행"):
+        delete_by_user(user)
+        st.success("삭제 완료")
+
+# =========================
+# 로그
+# =========================
+elif menu == "로그":
+    conn = sqlite3.connect(DB_FILE)
+    log_df = pd.read_sql("SELECT * FROM delete_log", conn)
+    conn.close()
+    st.dataframe(log_df)
