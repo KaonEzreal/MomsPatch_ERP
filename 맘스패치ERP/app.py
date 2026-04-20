@@ -9,6 +9,15 @@ st.set_page_config(page_title="맘스패치 정산 시스템", page_icon="📊",
 DB_FILE = "momspatch.db"
 
 # =========================
+# 포맷 함수
+# =========================
+def format_won(x):
+    try:
+        return f"{int(x):,}원"
+    except:
+        return x
+
+# =========================
 # DB 초기화
 # =========================
 def init_db():
@@ -35,9 +44,6 @@ def init_db():
 
 init_db()
 
-# =========================
-# 사용자
-# =========================
 USERS = {
     "admin": {"name": "관리자", "password": "1234"},
     "staff1": {"name": "직원1", "password": "1111"},
@@ -98,13 +104,13 @@ if menu == "입력":
         d = st.date_input("날짜")
         item = st.text_input("상품")
         qty = st.number_input("수량", 1)
-        price = st.number_input("단가", 0)
+        price = st.number_input("단가 (원)", 0, step=1000)
         region = st.selectbox("지역", REGIONS) if t=="현장판매" else ""
         memo = st.text_input("메모")
         if st.form_submit_button("저장"):
             total = qty*price
             insert_sale((datetime.now(), st.session_state.user, st.session_state.name, t, d, item, qty, price, total, region, memo))
-            st.success("저장 완료 (DB 저장됨 - 절대 안날아감)")
+            st.success(f"저장 완료 - 총금액: {format_won(total)}")
 
 elif menu == "정산":
     df = load_data()
@@ -122,13 +128,18 @@ elif menu == "정산":
             df["p"] = df["sale_date"].dt.year
 
         g = df.groupby(["p","type"]).agg({"total":"sum","qty":"sum"}).reset_index()
+        g["total"] = g["total"].apply(format_won)
         st.dataframe(g)
 
 elif menu == "지역분석":
     df = load_data()
     df = df[df["type"]=="현장판매"]
-    g = df.groupby("region").agg({"total":"sum","qty":"sum"}).reset_index()
-    st.dataframe(g)
+    if df.empty:
+        st.warning("현장 데이터 없음")
+    else:
+        g = df.groupby("region").agg({"total":"sum","qty":"sum"}).reset_index()
+        g["total"] = g["total"].apply(format_won)
+        st.dataframe(g)
 
 elif menu == "엑셀":
     df = load_data()
