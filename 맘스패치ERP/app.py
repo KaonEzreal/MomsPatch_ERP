@@ -9,63 +9,15 @@ st.set_page_config(page_title="맘스패치 ERP", page_icon="🟢", layout="wide
 DB_FILE = "momspatch.db"
 
 # =========================
-# 🎨 UI 스타일 (화이트 + 연두 ONLY)
+# 스타일 (화이트 + 연두)
 # =========================
 st.markdown("""
 <style>
-/* 전체 배경 */
-body {
-    background-color: #ffffff;
-}
-
-/* 메인 컨테이너 */
-.main {
-    background-color: #ffffff;
-}
-
-/* 사이드바 */
-section[data-testid="stSidebar"] {
-    background-color: #f5fff5;
-}
-
-/* 제목 */
-h1, h2, h3 {
-    color: #2ecc71;
-}
-
-/* 버튼 */
-.stButton > button {
-    background-color: #a8f0a5;
-    color: black;
-    border-radius: 10px;
-    border: none;
-}
-
-.stButton > button:hover {
-    background-color: #7ed957;
-}
-
-/* 입력창 */
-input, textarea {
-    border: 1px solid #a8f0a5 !important;
-    border-radius: 8px;
-}
-
-/* 셀렉트박스 */
-[data-baseweb="select"] {
-    border: 1px solid #a8f0a5;
-    border-radius: 8px;
-}
-
-/* 테이블 */
-[data-testid="stDataFrame"] {
-    background-color: #ffffff;
-}
-
-/* 헤더 고정 느낌 */
-.block-container {
-    padding-top: 1rem;
-}
+body { background-color: #f9fff9; }
+header { background-color: #eaffea !important; }
+.sidebar .sidebar-content { background-color: #f1fff1; }
+h1, h2, h3 { color: #2e7d32; }
+.stButton>button { background-color: #7ed957; color: black; }
 </style>
 """, unsafe_allow_html=True)
 
