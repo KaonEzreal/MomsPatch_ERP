@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import streamlit as st
 
 st.set_page_config(
@@ -15,44 +16,53 @@ st.set_page_config(
 )
 
 # =========================
-# DB 연결 (Supabase PostgreSQL)
+# DB 연결 풀 (앱 시작 시 1회만 연결, 이후 재사용 → 속도 향상)
 # =========================
-def get_conn():
+@st.cache_resource
+def get_pool():
     db_url = st.secrets.get("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
     if not db_url:
         st.error("DATABASE_URL이 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
         st.stop()
-    return psycopg2.connect(db_url, sslmode="require")
+    return psycopg2.pool.SimpleConnectionPool(1, 5, db_url, sslmode="require")
+
+def get_conn():
+    return get_pool().getconn()
+
+def release_conn(conn):
+    get_pool().putconn(conn)
 
 
 def init_db():
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sales (
-            id SERIAL PRIMARY KEY,
-            created_at TEXT,
-            "user" TEXT,
-            type TEXT,
-            sale_date TEXT,
-            item TEXT,
-            qty INTEGER,
-            price INTEGER,
-            total INTEGER,
-            region TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS delete_log (
-            id SERIAL PRIMARY KEY,
-            deleted_at TEXT,
-            reason TEXT,
-            data TEXT
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sales (
+                id SERIAL PRIMARY KEY,
+                created_at TEXT,
+                "user" TEXT,
+                type TEXT,
+                sale_date TEXT,
+                item TEXT,
+                qty INTEGER,
+                price INTEGER,
+                total INTEGER,
+                region TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS delete_log (
+                id SERIAL PRIMARY KEY,
+                deleted_at TEXT,
+                reason TEXT,
+                data TEXT
+            )
+        """)
+        conn.commit()
+        cur.close()
+    finally:
+        release_conn(conn)
 
 
 init_db()
@@ -63,42 +73,55 @@ init_db()
 # =========================
 def insert_sale(data):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """INSERT INTO sales (created_at, "user", type, sale_date, item, qty, price, total, region)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        data
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO sales (created_at, "user", type, sale_date, item, qty, price, total, region)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            data
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        release_conn(conn)
+    # 저장 후 캐시 즉시 갱신
+    load_df.clear()
 
 
+@st.cache_data(ttl=3)  # 3초 캐시 → 메뉴 이동 시 재쿼리 없음, 3초 후 자동 갱신
 def load_df():
     conn = get_conn()
-    df = pd.read_sql('SELECT * FROM sales ORDER BY id DESC', conn)
-    conn.close()
-    return df
+    try:
+        df = pd.read_sql('SELECT * FROM sales ORDER BY id DESC', conn)
+        return df
+    finally:
+        release_conn(conn)
 
 
+@st.cache_data(ttl=10)
 def load_delete_log_df():
     conn = get_conn()
-    df = pd.read_sql('SELECT * FROM delete_log ORDER BY id DESC', conn)
-    conn.close()
-    return df
+    try:
+        df = pd.read_sql('SELECT * FROM delete_log ORDER BY id DESC', conn)
+        return df
+    finally:
+        release_conn(conn)
 
 
 def log_delete(reason, df):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO delete_log (deleted_at, reason, data) VALUES (%s,%s,%s)",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason,
-         df.to_json(force_ascii=False, orient="records"))
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO delete_log (deleted_at, reason, data) VALUES (%s,%s,%s)",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason,
+             df.to_json(force_ascii=False, orient="records"))
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        release_conn(conn)
+    load_delete_log_df.clear()
 
 
 def delete_by_ids(ids):
@@ -109,11 +132,14 @@ def delete_by_ids(ids):
     if not target.empty:
         log_delete("개별삭제", target)
     conn = get_conn()
-    cur = conn.cursor()
-    cur.executemany("DELETE FROM sales WHERE id=%s", [(int(i),) for i in ids])
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.executemany("DELETE FROM sales WHERE id=%s", [(int(i),) for i in ids])
+        conn.commit()
+        cur.close()
+    finally:
+        release_conn(conn)
+    load_df.clear()
     return len(ids)
 
 
@@ -124,11 +150,14 @@ def delete_by_date(date_val):
     if not target.empty:
         log_delete("날짜삭제", target)
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM sales WHERE sale_date=%s", (date_str,))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sales WHERE sale_date=%s", (date_str,))
+        conn.commit()
+        cur.close()
+    finally:
+        release_conn(conn)
+    load_df.clear()
     return len(target)
 
 
@@ -138,11 +167,14 @@ def delete_by_user(user):
     if not target.empty:
         log_delete("담당자삭제", target)
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('DELETE FROM sales WHERE "user"=%s', (user,))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM sales WHERE "user"=%s', (user,))
+        conn.commit()
+        cur.close()
+    finally:
+        release_conn(conn)
+    load_df.clear()
     return len(target)
 
 
